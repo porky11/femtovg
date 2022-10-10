@@ -209,7 +209,7 @@ fn run(
 
                     canvas.fill_path(
                         &mut path,
-                        Paint::image(image_id, a.0, a.1, b.0 - a.0, b.1 - a.1, 0f32, 1f32),
+                        &Paint::image(image_id, a.0, a.1, b.0 - a.0, b.1 - a.1, 0f32, 1f32),
                     );
                 }
 
