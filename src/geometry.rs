@@ -420,3 +420,9 @@ impl Default for Bounds {
         }
     }
 }
+
+impl Bounds {
+    pub(crate) fn contains(&self, x: f32, y: f32) -> bool {
+        (self.minx..=self.maxx).contains(&x) && (self.miny..=self.maxy).contains(&y)
+    }
+}
