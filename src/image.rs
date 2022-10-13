@@ -10,7 +10,7 @@ use ::image::DynamicImage;
 #[cfg(feature = "image-loading")]
 use std::convert::TryFrom;
 
-use crate::{ErrorKind, Renderer};
+use crate::{geometry::Size, ErrorKind, Renderer};
 
 /// An image handle.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -60,16 +60,16 @@ impl ImageSource<'_> {
     }
 
     /// Source dimensions
-    pub fn dimensions(&self) -> (usize, usize) {
-        // TODO: Create size struct and use it here and in ImageInfo.
-
-        match self {
+    pub fn dimensions(&self) -> Size {
+        let (width, height) = match self {
             Self::Rgb(imgref) => (imgref.width(), imgref.height()),
             Self::Rgba(imgref) => (imgref.width(), imgref.height()),
             Self::Gray(imgref) => (imgref.width(), imgref.height()),
             #[cfg(target_arch = "wasm32")]
             Self::HtmlImageElement(element) => (element.width() as usize, element.height() as usize),
-        }
+        };
+
+        Size { width, height }
     }
 }
 
@@ -129,8 +129,7 @@ impl<'a> TryFrom<&'a DynamicImage> for ImageSource<'a> {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ImageInfo {
     flags: ImageFlags,
-    width: usize,
-    height: usize,
+    size: Size,
     format: PixelFormat,
 }
 
@@ -138,8 +137,7 @@ impl ImageInfo {
     pub fn new(flags: ImageFlags, width: usize, height: usize, format: PixelFormat) -> Self {
         Self {
             flags,
-            width,
-            height,
+            size: Size { width, height },
             format,
         }
     }
@@ -151,12 +149,12 @@ impl ImageInfo {
 
     /// Image width in pixels
     pub fn width(&self) -> usize {
-        self.width
+        self.size.width
     }
 
     /// Image height in pixels
     pub fn height(&self) -> usize {
-        self.height
+        self.size.height
     }
 
     /// Image format

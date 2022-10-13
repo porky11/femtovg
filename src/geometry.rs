@@ -197,6 +197,12 @@ pub(crate) fn quantize(a: f32, d: f32) -> f32 {
     (a / d + 0.5).trunc() * d
 }
 
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Size {
+    pub width: usize,
+    pub height: usize,
+}
+
 /// 2×3 matrix (2 rows, 3 columns) used for 2D linear transformations. It can represent transformations such as translation, rotation, or scaling.
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "serialization", derive(Serialize, Deserialize))]
