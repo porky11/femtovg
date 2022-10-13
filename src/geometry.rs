@@ -238,8 +238,7 @@ impl Transform2D {
     }
 
     pub fn rotate(&mut self, a: f32) {
-        let cs = a.cos();
-        let sn = a.sin();
+        let (sn, cs) = a.sin_cos();
 
         self[0] = cs;
         self[1] = sn;

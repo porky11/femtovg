@@ -212,8 +212,8 @@ impl Path {
 
         // Split arc into max 90 degree segments.
         let ndivs = ((da.abs() / (PI * 0.5) + 0.5) as i32).min(5).max(1);
-        let hda = (da / ndivs as f32) / 2.0;
-        let mut kappa = (4.0 / 3.0 * (1.0 - hda.cos()) / hda.sin()).abs();
+        let (hda_sin, hda_cos) = (da / (ndivs as f32 * 2.0)).sin_cos();
+        let mut kappa = (4.0 / 3.0 * (1.0 - hda_cos) / hda_sin).abs();
 
         let mut commands = Vec::with_capacity(ndivs as usize);
         let mut coords = Vec::with_capacity(ndivs as usize);
