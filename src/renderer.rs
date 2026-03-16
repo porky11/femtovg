@@ -87,6 +87,7 @@ pub struct Command {
     pub(crate) glyph_texture: GlyphTexture,
     pub(crate) fill_rule: FillRule,
     pub(crate) composite_operation: CompositeOperationState,
+    pub(crate) depth: f32,
 }
 
 impl Command {
@@ -100,6 +101,7 @@ impl Command {
             glyph_texture: GlyphTexture::default(),
             fill_rule: FillRule::default(),
             composite_operation: CompositeOperationState::default(),
+            depth: 0.0,
         }
     }
 }
@@ -186,22 +188,30 @@ pub struct Vertex {
     pub u: f32,
     /// V-coordinate of the vertex (for texture mapping).
     pub v: f32,
+    /// Depth value for depth testing (0.0 = near, 1.0 = far).
+    pub depth: f32,
 }
 
 impl Vertex {
     pub(crate) fn pos(position: Position, u: f32, v: f32) -> Self {
         let Position { x, y } = position;
-        Self { x, y, u, v }
+        Self { x, y, u, v, depth: 0.0 }
     }
 
     /// Create a new vertex with the specified coordinates.
     pub fn new(x: f32, y: f32, u: f32, v: f32) -> Self {
-        Self { x, y, u, v }
+        Self { x, y, u, v, depth: 0.0 }
     }
 
     /// Set the coordinates of the vertex.
     pub fn set(&mut self, x: f32, y: f32, u: f32, v: f32) {
-        *self = Self { x, y, u, v };
+        *self = Self {
+            x,
+            y,
+            u,
+            v,
+            depth: self.depth,
+        };
     }
 }
 

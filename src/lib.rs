@@ -274,6 +274,7 @@ struct State {
     transform: Transform2D,
     scissor: Scissor,
     alpha: f32,
+    depth: f32,
 }
 
 impl Default for State {
@@ -283,6 +284,7 @@ impl Default for State {
             transform: Transform2D::identity(),
             scissor: Scissor::default(),
             alpha: 1.0,
+            depth: 0.0,
         }
     }
 }
@@ -388,6 +390,7 @@ where
     pub fn clear_rect(&mut self, x: u32, y: u32, width: u32, height: u32, color: Color) {
         let mut cmd = Command::new(CommandType::ClearRect { color });
         cmd.composite_operation = self.state().composite_operation;
+        cmd.depth = 0.0;
 
         let x0 = x as f32;
         let y0 = y as f32;
@@ -399,19 +402,25 @@ where
         let (p4, p5) = (x1, y1);
         let (p6, p7) = (x0, y1);
 
+        let make_vert = |x, y| Vertex {
+            x,
+            y,
+            u: 0.0,
+            v: 0.0,
+            depth: 1.0,
+        };
         let verts = [
-            Vertex::new(p0, p1, 0.0, 0.0),
-            Vertex::new(p4, p5, 0.0, 0.0),
-            Vertex::new(p2, p3, 0.0, 0.0),
-            Vertex::new(p0, p1, 0.0, 0.0),
-            Vertex::new(p6, p7, 0.0, 0.0),
-            Vertex::new(p4, p5, 0.0, 0.0),
+            make_vert(p0, p1),
+            make_vert(p4, p5),
+            make_vert(p2, p3),
+            make_vert(p0, p1),
+            make_vert(p6, p7),
+            make_vert(p4, p5),
         ];
 
         cmd.triangles_verts = Some((self.verts.len(), verts.len()));
-        self.append_cmd(cmd);
-
         self.verts.extend_from_slice(&verts);
+        self.append_cmd(cmd);
     }
 
     /// Returns the width of the current render target.
@@ -501,6 +510,17 @@ where
         self.state_mut().alpha = alpha;
     }
 
+    /// Sets the depth value for subsequent draw calls.
+    ///
+    /// When depth testing is enabled on the renderer, this controls the Z position
+    /// of drawn geometry. Values range from 0.0 (near) to 1.0 (far). Draw calls
+    /// with smaller depth values will appear in front of those with larger values.
+    ///
+    /// This is useful for 3D projected paths where correct occlusion is needed.
+    pub fn set_depth(&mut self, depth: f32) {
+        self.state_mut().depth = depth;
+    }
+
     /// Sets the composite operation.
     pub fn global_composite_operation(&mut self, op: CompositeOperation) {
         self.state_mut().composite_operation = CompositeOperationState::new(op);
@@ -536,6 +556,25 @@ where
     }
 
     fn append_cmd(&mut self, cmd: Command) {
+        if cmd.depth != 0.0 {
+            if let Some((start, count)) = cmd.triangles_verts {
+                for vertex in &mut self.verts[start..start + count] {
+                    vertex.depth = cmd.depth;
+                }
+            }
+            for drawable in &cmd.drawables {
+                if let Some((start, count)) = drawable.fill_verts {
+                    for vertex in &mut self.verts[start..start + count] {
+                        vertex.depth = cmd.depth;
+                    }
+                }
+                if let Some((start, count)) = drawable.stroke_verts {
+                    for vertex in &mut self.verts[start..start + count] {
+                        vertex.depth = cmd.depth;
+                    }
+                }
+            }
+        }
         self.commands.push(cmd);
     }
 
@@ -859,10 +898,39 @@ where
 
     /// Fills the provided Path with the specified Paint and fill rule.
     pub fn fill_path(&mut self, path: &Path, paint: &Paint, fill_rule: FillRule) {
-        self.fill_path_internal(path, &paint.flavor, paint.shape_anti_alias, fill_rule);
+        self.fill_path_internal(path, &paint.flavor, paint.shape_anti_alias, fill_rule, None);
     }
 
-    fn fill_path_internal(&mut self, path: &Path, paint_flavor: &PaintFlavor, anti_alias: bool, fill_rule: FillRule) {
+    /// Fills the provided Path with per-pixel depth values from a closure.
+    ///
+    /// The depth function receives screen-space (x, y) coordinates and returns
+    /// a depth value (0.0 = near, 1.0 = far). The interior is covered by a
+    /// subdivided grid whose vertices carry interpolated depth values, enabling
+    /// correct depth-buffer occlusion for curved 3D surfaces.
+    pub fn fill_path_with_depth(
+        &mut self,
+        path: &Path,
+        paint: &Paint,
+        fill_rule: FillRule,
+        depth_function: impl Fn(f32, f32) -> f32,
+    ) {
+        self.fill_path_internal(
+            path,
+            &paint.flavor,
+            paint.shape_anti_alias,
+            fill_rule,
+            Some(&depth_function),
+        );
+    }
+
+    fn fill_path_internal(
+        &mut self,
+        path: &Path,
+        paint_flavor: &PaintFlavor,
+        anti_alias: bool,
+        fill_rule: FillRule,
+        depth_function: Option<&dyn Fn(f32, f32) -> f32>,
+    ) {
         let transform = self.state().transform;
 
         // The path cache saves a flattened and transformed version of the path.
@@ -951,6 +1019,7 @@ where
         let mut cmd = Command::new(flavor);
         cmd.fill_rule = fill_rule;
         cmd.composite_operation = self.state().composite_operation;
+        cmd.depth = self.state().depth;
 
         if let PaintFlavor::Image { id, .. } = paint_flavor {
             cmd.image = Some(id);
@@ -961,16 +1030,13 @@ where
                 .ok();
         }
 
-        // All verts from all shapes are kept in a single buffer here in the canvas.
-        // Drawable struct is used to describe the range of vertices each draw call will operate on
-        let mut offset = self.verts.len();
+        let verts_start = self.verts.len();
+
+        let mut offset = verts_start;
 
         cmd.drawables.reserve_exact(path_cache.contours.len());
         for contour in &path_cache.contours {
             let mut drawable = Drawable::default();
-
-            // Fill commands can have both fill and stroke vertices. Fill vertices are used to fill
-            // the body of the shape while stroke vertices are used to prodice antialiased edges
 
             if !contour.fill.is_empty() {
                 drawable.fill_verts = Some((offset, contour.fill.len()));
@@ -987,36 +1053,59 @@ where
             cmd.drawables.push(drawable);
         }
 
-        if let CommandType::ConcaveFill { .. } = cmd.cmd_type {
-            // Concave shapes are first filled by writing to a stencil buffer and then drawing a quad
-            // over the shape area with stencil test enabled to produce the final fill. These are
-            // the verts needed for the covering quad
-            self.verts.push(Vertex::new(
-                path_cache.bounds.maxx + fringe_width,
-                path_cache.bounds.maxy + fringe_width,
-                0.5,
-                1.0,
-            ));
-            self.verts.push(Vertex::new(
-                path_cache.bounds.maxx + fringe_width,
-                path_cache.bounds.miny - fringe_width,
-                0.5,
-                1.0,
-            ));
-            self.verts.push(Vertex::new(
-                path_cache.bounds.minx - fringe_width,
-                path_cache.bounds.maxy + fringe_width,
-                0.5,
-                1.0,
-            ));
-            self.verts.push(Vertex::new(
-                path_cache.bounds.minx - fringe_width,
-                path_cache.bounds.miny,
-                0.5,
-                1.0,
-            ));
+        if let Some(depth_fn) = &depth_function {
+            for vertex in &mut self.verts[verts_start..] {
+                vertex.depth = depth_fn(vertex.x, vertex.y);
+            }
+        }
 
-            cmd.triangles_verts = Some((offset, 4));
+        if let CommandType::ConcaveFill { .. } = cmd.cmd_type {
+            let minx = path_cache.bounds.minx - fringe_width;
+            let miny = path_cache.bounds.miny - fringe_width;
+            let maxx = path_cache.bounds.maxx + fringe_width;
+            let maxy = path_cache.bounds.maxy + fringe_width;
+
+            if let Some(depth_fn) = &depth_function {
+                let grid_size = 32;
+                let grid_verts_start = self.verts.len();
+
+                for iy in 0..grid_size {
+                    for ix in 0..grid_size {
+                        let x0 = minx + (maxx - minx) * ix as f32 / grid_size as f32;
+                        let x1 = minx + (maxx - minx) * (ix + 1) as f32 / grid_size as f32;
+                        let y0 = miny + (maxy - miny) * iy as f32 / grid_size as f32;
+                        let y1 = miny + (maxy - miny) * (iy + 1) as f32 / grid_size as f32;
+
+                        let d00 = depth_fn(x0, y0);
+                        let d10 = depth_fn(x1, y0);
+                        let d01 = depth_fn(x0, y1);
+                        let d11 = depth_fn(x1, y1);
+
+                        let mut v = |x, y, d| {
+                            let mut vertex = Vertex::new(x, y, 0.5, 1.0);
+                            vertex.depth = d;
+                            self.verts.push(vertex);
+                        };
+
+                        v(x0, y0, d00);
+                        v(x1, y1, d11);
+                        v(x1, y0, d10);
+
+                        v(x0, y0, d00);
+                        v(x0, y1, d01);
+                        v(x1, y1, d11);
+                    }
+                }
+
+                let grid_vert_count = self.verts.len() - grid_verts_start;
+                cmd.triangles_verts = Some((grid_verts_start, grid_vert_count));
+            } else {
+                self.verts.push(Vertex::new(maxx, maxy, 0.5, 1.0));
+                self.verts.push(Vertex::new(maxx, miny, 0.5, 1.0));
+                self.verts.push(Vertex::new(minx, maxy, 0.5, 1.0));
+                self.verts.push(Vertex::new(minx, miny, 0.5, 1.0));
+                cmd.triangles_verts = Some((offset, 4));
+            }
         }
 
         self.append_cmd(cmd);
@@ -1118,6 +1207,7 @@ where
         // GPU command
         let mut cmd = Command::new(flavor);
         cmd.composite_operation = self.state().composite_operation;
+        cmd.depth = self.state().depth;
 
         if let PaintFlavor::Image { id, .. } = paint_flavor {
             cmd.image = Some(id);
@@ -1165,6 +1255,7 @@ where
 
         let mut cmd = Command::new(CommandType::Triangles { params });
         cmd.composite_operation = self.state().composite_operation;
+        cmd.depth = self.state().depth;
 
         let x0 = target_rect.x;
         let y0 = target_rect.y;
@@ -1583,6 +1674,7 @@ where
 
         let mut cmd = Command::new(CommandType::Triangles { params });
         cmd.composite_operation = self.state().composite_operation;
+        cmd.depth = self.state().depth;
         cmd.glyph_texture = glyph_texture;
 
         if let &PaintFlavor::Image { id, .. } = paint_flavor {

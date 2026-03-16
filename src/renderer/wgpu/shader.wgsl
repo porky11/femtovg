@@ -48,6 +48,7 @@ var<uniform> params: Params;
 struct Vertex {
     vertex: vec2<f32>,
     tcoord: vec2<f32>,
+    depth: f32,
 }
 
 struct VertexOutput {
@@ -60,11 +61,12 @@ struct VertexOutput {
 fn vs_main(
     @location(0) vertex: vec2<f32>,
     @location(1) tcoord: vec2<f32>,
+    @location(2) depth: f32,
 ) -> VertexOutput {
     var result: VertexOutput;
     result.ftcoord = tcoord;
     result.fpos = vertex;
-    result.position = vec4<f32>(2.0 * vertex.x / viewSize.x - 1.0, 1.0 - 2.0 * vertex.y / viewSize.y, 0, 1);
+    result.position = vec4<f32>(2.0 * vertex.x / viewSize.x - 1.0, 1.0 - 2.0 * vertex.y / viewSize.y, depth, 1);
     return result;
 }
 
@@ -72,11 +74,12 @@ fn vs_main(
 fn vs_main_texture(
     @location(0) vertex: vec2<f32>,
     @location(1) tcoord: vec2<f32>,
+    @location(2) depth: f32,
 ) -> VertexOutput {
     var result: VertexOutput;
     result.ftcoord = tcoord;
     result.fpos = vertex;
-    result.position = vec4<f32>(2.0 * vertex.x / viewSize.x - 1.0, 2.0 * vertex.y / viewSize.y - 1.0, 0, 1);
+    result.position = vec4<f32>(2.0 * vertex.x / viewSize.x - 1.0, 2.0 * vertex.y / viewSize.y - 1.0, depth, 1);
     return result;
 }
 
@@ -122,7 +125,6 @@ fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
             result = renderImage(vertex, params);
         }
         case SHADER_TYPE_FillColor: {
-            // Plain color fill
             result = params.inner_col;
         }
         case SHADER_TYPE_TextureCopyUnclipped: {

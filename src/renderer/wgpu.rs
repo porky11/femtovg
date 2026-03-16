@@ -334,7 +334,7 @@ impl Renderer for WGPURenderer {
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Stencil8,
+                    format: wgpu::TextureFormat::Depth24PlusStencil8,
                     view_formats: &[],
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 })
@@ -1130,6 +1130,7 @@ struct PipelineState {
     primitive_topology: wgpu::PrimitiveTopology,
     cull_mode: Option<wgpu::Face>,
     stencil_state: Option<wgpu::StencilState>,
+    depth_enabled: bool,
 }
 
 impl PipelineState {
@@ -1179,6 +1180,7 @@ impl PipelineState {
             primitive_topology,
             cull_mode,
             stencil_state: has_stencil_buffer.then_some(stencil_state),
+            depth_enabled: has_stencil_buffer,
         }
     }
 
@@ -1203,7 +1205,7 @@ impl PipelineState {
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32],
                 }],
                 compilation_options: Default::default(),
             },
@@ -1223,16 +1225,21 @@ impl PipelineState {
                 cull_mode: self.cull_mode,
                 ..Default::default()
             },
-            depth_stencil: self
-                .stencil_state
-                .as_ref()
-                .map(|stencil_state| wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Stencil8,
-                    depth_write_enabled: false,
-                    depth_compare: wgpu::CompareFunction::Always,
+            depth_stencil: self.stencil_state.as_ref().map(|stencil_state| {
+                let is_stencil_write = self.color_target_state.write_mask == wgpu::ColorWrites::empty();
+                let depth_active = self.depth_enabled && !is_stencil_write;
+                wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth24PlusStencil8,
+                    depth_write_enabled: depth_active,
+                    depth_compare: if depth_active {
+                        wgpu::CompareFunction::LessEqual
+                    } else {
+                        wgpu::CompareFunction::Always
+                    },
                     stencil: stencil_state.clone(),
                     bias: Default::default(),
-                }),
+                }
+            }),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
@@ -1323,6 +1330,7 @@ struct RenderPassBuilder<'a> {
     screen_surface_format: wgpu::TextureFormat,
     stencil_buffer_for_textures: &'a mut HashMap<wgpu::Texture, wgpu::Texture>,
     viewport_bind_group: wgpu::BindGroup,
+    depth_cleared: bool,
 }
 
 impl<'a> RenderPassBuilder<'a> {
@@ -1356,6 +1364,7 @@ impl<'a> RenderPassBuilder<'a> {
             screen_surface_format,
             stencil_buffer_for_textures,
             viewport_bind_group,
+            depth_cleared: false,
         }
     }
 
@@ -1474,7 +1483,7 @@ impl<'a> RenderPassBuilder<'a> {
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Stencil8,
+                    format: wgpu::TextureFormat::Depth24PlusStencil8,
                     view_formats: &[],
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 })
@@ -1501,6 +1510,13 @@ impl<'a> RenderPassBuilder<'a> {
             .as_ref()
             .map(|buffer| buffer.create_view(&Default::default()));
 
+        let depth_load = if self.depth_cleared {
+            wgpu::LoadOp::Load
+        } else {
+            self.depth_cleared = true;
+            wgpu::LoadOp::Clear(1.0)
+        };
+
         let mut rpass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1516,7 +1532,10 @@ impl<'a> RenderPassBuilder<'a> {
                 .as_ref()
                 .map(|view| wgpu::RenderPassDepthStencilAttachment {
                     view,
-                    depth_ops: None,
+                    depth_ops: Some(wgpu::Operations {
+                        load: depth_load,
+                        store: wgpu::StoreOp::Store,
+                    }),
                     stencil_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -1530,7 +1549,7 @@ impl<'a> RenderPassBuilder<'a> {
         if self.vertex_buffer.size() > 0 {
             rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         }
-        rpass.set_viewport(0., 0., self.viewport[0], self.viewport[1], 0., 0.);
+        rpass.set_viewport(0., 0., self.viewport[0], self.viewport[1], 0., 1.);
         self.current_bind_group_state.take();
         rpass.set_bind_group(0, &self.viewport_bind_group, &[]);
         self.rpass = Some(rpass.forget_lifetime());
